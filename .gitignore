@@ -8,3 +8,5 @@ dist/
 *.bak
 benchmark_*.txt
 reports/
+
+models/
