@@ -21,7 +21,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install build tools
-        run: python -m pip install --upgrade pip build twine pytest
+        run: python -m pip install --upgrade pip build twine pytest safetensors
 
       - name: Build distributions
         run: python -m build
@@ -51,4 +51,4 @@ jobs:
           }
 
       - name: Run CPU tests
-        run: python -m pytest -q tests/test_quantization.py tests/test_report.py
+        run: python -m pytest -q tests/test_quantization.py tests/test_report.py tests/test_model_eval.py

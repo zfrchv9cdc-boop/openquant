@@ -1,7 +1,6 @@
-﻿import json
+import json
 from pathlib import Path
 
-from openquant.model_eval import inspect_model, analyze_model
 
 
 def configure_commands(commands):
@@ -30,6 +29,7 @@ def configure_commands(commands):
 
 
 def run_inspect(args):
+    from openquant.model_eval import inspect_model
     info = inspect_model(
         args.input,
         limit=args.limit,
@@ -48,6 +48,7 @@ def run_inspect(args):
 
 
 def run_analyze(args):
+    from openquant.model_eval import analyze_model
     data = analyze_model(
         args.input,
         max_layers=args.max_layers,
