@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openquant-lab"
+version = "0.5.0"
+license = "MIT"
+description = "Experimental low-bit AI weight quantization and GPU benchmarking"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26"
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: Microsoft :: Windows",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+gpu = [
+    "torch>=2.14,<2.15",
+    "triton-windows>=3.8,<3.9; sys_platform == 'win32'"
+]
+
+[project.scripts]
+openquant = "openquant.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["openquant*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

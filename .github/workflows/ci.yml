@@ -1,0 +1,54 @@
+name: OpenQuant CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-cpu:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install build tools
+        run: python -m pip install --upgrade pip build twine pytest
+
+      - name: Build distributions
+        run: python -m build
+
+      - name: Validate distributions
+        shell: pwsh
+        run: |
+          $files = (Get-ChildItem dist\*).FullName
+          python -m twine check $files
+
+      - name: Install built wheel
+        shell: pwsh
+        run: |
+          $wheel = (Get-ChildItem dist\*.whl | Select-Object -First 1).FullName
+          python -m pip install $wheel
+
+      - name: Verify CLI outside repository
+        shell: pwsh
+        run: |
+          Push-Location $env:TEMP
+          try {
+            openquant --version
+            openquant cpu --rows 32 --cols 32
+          }
+          finally {
+            Pop-Location
+          }
+
+      - name: Run CPU tests
+        run: python -m pytest -q tests/test_quantization.py tests/test_report.py
