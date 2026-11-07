@@ -405,3 +405,98 @@ def test_pending_shape_tracking_is_bounded():
     )
 
 
+@pytest.mark.skipif(
+    not torch.cuda.is_available(),
+    reason="CUDA GPU required",
+)
+def test_failed_capture_preserves_existing_graph(monkeypatch):
+    import openquant.encoder_v07 as encoder_module
+
+    encoder = OpenQuantEncoder(
+        model=TinyModel(),
+        tokenizer=TinyTokenizer(),
+        max_graphs=1,
+        max_graph_cache_mb=128,
+        min_capture_free_mb=0,
+    )
+
+    original = encoder.encode(["cat"])
+    assert encoder.cache_info()["shapes"] == [[1, 16]]
+
+    def fail_capture(*args, **kwargs):
+        raise RuntimeError("Injected CUDA Graph failure")
+
+    monkeypatch.setattr(
+        encoder_module,
+        "FixedShapeGraph",
+        fail_capture,
+    )
+
+    changed = ["x" * 20]
+
+    expected = encoder.encode(
+        changed, use_graph=False
+    )
+    actual = encoder.encode(
+        changed, use_graph=True
+    )
+
+    torch.testing.assert_close(actual, expected)
+
+    info = encoder.cache_info()
+
+    assert info["cached_graphs"] == 1
+    assert info["shapes"] == [[1, 16]]
+    assert info["stats"]["capture_failures"] == 1
+    assert info["stats"].get("graph_evictions", 0) == 0
+
+    replay = encoder.encode(["cat"])
+
+    torch.testing.assert_close(replay, original)
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(),
+    reason="CUDA GPU required",
+)
+def test_rejected_candidate_preserves_existing_graph():
+    encoder = OpenQuantEncoder(
+        model=TinyModel(),
+        tokenizer=TinyTokenizer(),
+        max_graphs=1,
+        max_graph_cache_mb=128,
+        min_capture_free_mb=0,
+    )
+
+    original = encoder.encode(["cat"])
+
+    assert encoder.cache_info()["cached_graphs"] == 1
+
+    # Simulate a temporarily reduced admission budget.
+    # This tests rollback; it is not a normal runtime setting.
+    original_budget = encoder.max_graph_cache_bytes
+    encoder.max_graph_cache_bytes = 1
+
+    changed = ["x" * 20]
+
+    expected = encoder.encode(
+        changed, use_graph=False
+    )
+    actual = encoder.encode(
+        changed, use_graph=True
+    )
+
+    torch.testing.assert_close(actual, expected)
+
+    encoder.max_graph_cache_bytes = original_budget
+
+    info = encoder.cache_info()
+
+    assert info["cached_graphs"] == 1
+    assert info["shapes"] == [[1, 16]]
+    assert info["stats"]["budget_rejections"] >= 1
+    assert info["stats"].get("graph_evictions", 0) == 0
+
+    replay = encoder.encode(["cat"])
+
+    torch.testing.assert_close(replay, original)

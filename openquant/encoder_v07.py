@@ -342,10 +342,8 @@ class OpenQuantEncoder:
             self.stats["low_memory_fallbacks"] += 1
             return self._eager(tokens)
 
-        # Evict before capture if the graph count is full.
-        while len(self.graphs) >= self.max_graphs:
-            self._evict_lru()
-
+        # Preserve existing graphs until the candidate passes
+        # capture, correctness, and budget admission checks.
         with torch.inference_mode():
             reference = encode_sentences(
                 self.model, tokens
@@ -428,8 +426,11 @@ class OpenQuantEncoder:
         # until the retained-allocation budget fits.
         while (
             self.graphs
-            and self.graph_cache_bytes + cost
-            > self.max_graph_cache_bytes
+            and (
+                len(self.graphs) >= self.max_graphs
+                or self.graph_cache_bytes + cost
+                > self.max_graph_cache_bytes
+            )
         ):
             self._evict_lru()
 
