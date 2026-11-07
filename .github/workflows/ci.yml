@@ -54,3 +54,29 @@ jobs:
 
       - name: Run CPU tests
         run: python -m pytest -q tests/test_quantization.py tests/test_report.py tests/test_model_eval.py tests/test_checkpoint.py tests/test_encode_cli_v07.py
+  
+  windows-torch-cpu:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: 'pyproject.toml'
+
+      - name: Install PyTorch and test dependencies
+        run: python -m pip install --upgrade pip ".[model,test]" torch
+
+      - name: Test portable INT8 checkpoints
+        run: |
+          python -m pytest -q tests/test_torch_int8.py
+          python -m pytest -q tests/test_int8_checkpoint_v07.py
+
+      - name: Verify dependency consistency
+        run: python -m pip check
+ 
