@@ -117,12 +117,20 @@ def int4_linear(x, packed, scales, out_features, group_size, *, block_m=64, bloc
     if packed.device != x.device or scales.device != x.device:
         raise ValueError("All tensors must use the same GPU")
 
-    if algorithm not in ("auto", "legacy", "gemv", "packed"):
+    if algorithm not in ("auto", "legacy", "gemv", "packed", "batched"):
         raise ValueError("Unknown kernel algorithm")
 
     selected = algorithm
     if selected == "auto":
         selected = "gemv" if m <= 4 and k <= 8192 else "legacy"
+
+    if selected == "batched":
+        from openquant.triton_int4_batch import batched_int4_linear
+        return batched_int4_linear(
+            x, packed, scales, n, group_size,
+            block_n=block_n,
+            num_warps=num_warps,
+        )
 
     if selected != "legacy":
         from openquant.triton_int4_fast import fast_int4_linear
