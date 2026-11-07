@@ -343,3 +343,104 @@ def test_rejected_candidate_resets_graph(monkeypatch):
     assert calls == ["reset"]
     assert encoder.cache_info()["cached_graphs"] == 0
     assert encoder.cache_info()["stats"]["budget_rejections"] == 1
+
+
+def test_capture_limit_blocks_new_shapes_preserves_hot_graph():
+    encoder = make_encoder(
+        max_graphs=1,
+        graph_capture_max_attempts=1,
+    )
+
+    hot = encoder.encode(["cat"])
+    expected = encoder.encode(
+        ["z" * 40], use_graph=False
+    )
+    actual = encoder.encode(["z" * 40])
+
+    torch.testing.assert_close(actual, expected)
+
+    info = encoder.cache_info()
+
+    assert info["graph_capture_attempts"] == 1
+    assert info["cached_graphs"] == 1
+    assert info["shapes"] == [[1, 16]]
+    assert info["stats"]["capture_limit_fallbacks"] == 1
+    assert info["stats"].get("graph_evictions", 0) == 0
+
+    replay = encoder.encode(["cat"])
+    torch.testing.assert_close(replay, hot)
+
+    assert encoder.cache_info()["stats"]["graph_hits"] >= 1
+
+
+def test_capture_limit_survives_cache_clear():
+    encoder = make_encoder(
+        graph_capture_max_attempts=1
+    )
+
+    encoder.encode(["cat"])
+    encoder.clear_graph_cache()
+
+    assert encoder.cache_info()["graph_capture_attempts"] == 1
+
+    encoder.encode(["cat"])
+
+    info = encoder.cache_info()
+
+    assert info["cached_graphs"] == 0
+    assert info["graph_capture_attempts"] == 1
+    assert info["stats"]["capture_limit_fallbacks"] == 1
+
+
+def test_default_capture_limit_is_unlimited():
+    encoder = make_encoder(max_graphs=1)
+
+    encoder.encode(["cat"])
+    encoder.encode(["z" * 40])
+
+    info = encoder.cache_info()
+
+    assert info["graph_capture_max_attempts"] == 0
+    assert info["graph_capture_attempts"] == 2
+    assert info["stats"]["graph_captures"] == 2
+
+
+def test_capture_limit_counts_budget_rejections():
+    encoder = make_encoder(
+        max_graph_cache_mb=1,
+        graph_capture_min_budget_mb=0,
+        graph_capture_max_attempts=1,
+    )
+
+    expected = encoder.encode(
+        ["cat"], use_graph=False
+    )
+    actual = encoder.encode(["cat"])
+
+    torch.testing.assert_close(actual, expected)
+
+    info = encoder.cache_info()
+
+    assert info["graph_capture_attempts"] == 1
+    assert info["stats"]["budget_rejections"] == 1
+
+    encoder.encode(["z" * 40])
+
+    assert (
+        encoder.cache_info()["stats"]["capture_limit_fallbacks"]
+        == 1
+    )
+
+
+@pytest.mark.parametrize(
+    "bad_value",
+    [-1, 1.5, "8", True, None],
+)
+def test_capture_limit_rejects_invalid_configuration(bad_value):
+    with pytest.raises(
+        ValueError,
+        match="graph_capture_max_attempts",
+    ):
+        make_encoder(
+            graph_capture_max_attempts=bad_value
+        )

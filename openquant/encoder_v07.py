@@ -121,6 +121,7 @@ class OpenQuantEncoder:
         min_capture_free_mb=256,
         graph_capture_min_calls=1,
         graph_capture_min_budget_mb=0,
+        graph_capture_max_attempts=0,
         model=None,
         tokenizer=None,
     ):
@@ -155,6 +156,15 @@ class OpenQuantEncoder:
                 'graph_capture_min_budget_mb must be finite and nonnegative'
             )
 
+        if (
+            isinstance(graph_capture_max_attempts, bool)
+            or not isinstance(graph_capture_max_attempts, int)
+            or graph_capture_max_attempts < 0
+        ):
+            raise ValueError(
+                'graph_capture_max_attempts must be a nonnegative integer'
+            )
+
         self.max_graph_cache_bytes = int(
             max_graph_cache_mb * 1024 * 1024
         )
@@ -164,6 +174,11 @@ class OpenQuantEncoder:
         self.graph_capture_min_budget_bytes = int(
             graph_capture_min_budget_mb * 1024 * 1024
         )
+
+        self.graph_capture_max_attempts = (
+            graph_capture_max_attempts
+        )
+        self.graph_capture_attempts = 0
 
         self.batch_size = batch_size
         self.max_length = max_length
@@ -362,6 +377,14 @@ class OpenQuantEncoder:
                 self.stats["cold_shape_fallbacks"] += 1
                 return self._eager(tokens)
 
+        if (
+            self.graph_capture_max_attempts > 0
+            and self.graph_capture_attempts
+            >= self.graph_capture_max_attempts
+        ):
+            self.stats["capture_limit_fallbacks"] += 1
+            return self._eager(tokens)
+
         free_bytes, _ = torch.cuda.mem_get_info()
 
         if free_bytes < self.min_capture_free_bytes:
@@ -377,6 +400,8 @@ class OpenQuantEncoder:
 
         torch.cuda.synchronize()
         allocated_before = torch.cuda.memory_allocated()
+
+        self.graph_capture_attempts += 1
 
         try:
             candidate = FixedShapeGraph(
@@ -528,6 +553,8 @@ class OpenQuantEncoder:
                 "graph_cache_bytes": self.graph_cache_bytes,
                 "graph_budget_bytes": self.max_graph_cache_bytes,
                 "graph_capture_min_calls": self.graph_capture_min_calls,
+                "graph_capture_max_attempts": self.graph_capture_max_attempts,
+                "graph_capture_attempts": self.graph_capture_attempts,
                 "graph_capture_min_budget_bytes": self.graph_capture_min_budget_bytes,
                 "pending_shapes": [
                     [key[0], key[1], count]
