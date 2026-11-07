@@ -75,7 +75,7 @@ def _int4_matmul(
     )
 
 
-def int4_linear(x, packed, scales, out_features, group_size, *, block_m=64, block_n=64, block_k=64, num_warps=4):
+def int4_linear(x, packed, scales, out_features, group_size, *, block_m=64, block_n=64, block_k=64, num_warps=4, algorithm="auto"):
     """Fused groupwise INT4 dequantization + matrix multiplication."""
 
     if x.ndim != 2 or x.dtype != torch.float16:
@@ -116,6 +116,24 @@ def int4_linear(x, packed, scales, out_features, group_size, *, block_m=64, bloc
 
     if packed.device != x.device or scales.device != x.device:
         raise ValueError("All tensors must use the same GPU")
+
+    if algorithm not in ("auto", "legacy", "gemv", "packed"):
+        raise ValueError("Unknown kernel algorithm")
+
+    selected = algorithm
+    if selected == "auto":
+        selected = "gemv" if m <= 4 and k <= 8192 else "legacy"
+
+    if selected != "legacy":
+        from openquant.triton_int4_fast import fast_int4_linear
+        return fast_int4_linear(
+            x, packed, scales, n, group_size,
+            algorithm=selected,
+            block_m=block_m,
+            block_n=block_n,
+            block_k=block_k,
+            num_warps=num_warps,
+        )
 
     output = torch.empty(
         (m, n), device=x.device, dtype=torch.float32
