@@ -40,6 +40,8 @@ def main(argv=None):
     )
 
     configure_commands(commands)
+    from openquant.encode_cli import configure_encode_command
+    configure_encode_command(commands)
 
     args = parser.parse_args(argv)
 
@@ -63,6 +65,13 @@ def main(argv=None):
 
     elif args.command == "analyze-model":
         run_analyze(args)
+
+    elif args.command == "encode":
+        from openquant.encode_cli import run_encode
+        try:
+            return run_encode(args)
+        except (ValueError, OSError) as exc:
+            parser.error(str(exc))
 
     elif args.command == "report":
         from openquant.report import make_cpu_report
