@@ -25,6 +25,13 @@ gpu = [
     "triton-windows>=3.8,<3.9; sys_platform == 'win32'"
 ]
 
+inference = [
+    "safetensors>=0.5",
+    "transformers>=4.57,<5",
+    "torch>=2.14,<2.15",
+    "triton-windows>=3.8,<3.9; sys_platform == 'win32'",
+]
+
 [project.scripts]
 openquant = "openquant.cli:main"
 
