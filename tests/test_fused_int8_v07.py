@@ -25,7 +25,7 @@ pytestmark = pytest.mark.skipif(
     ],
 )
 def test_fused_int8_handles_varied_shapes(m, n, k):
-    from benchmark_fused_int8_v07 import fused_int8
+    from openquant.triton_int8 import int8_linear as fused_int8
 
     rng = np.random.default_rng(42)
 
@@ -51,7 +51,7 @@ def test_fused_int8_handles_varied_shapes(m, n, k):
     reference = x.float() @ reference_weights.T
 
     result = fused_int8(
-        x, packed, scales, n
+        x, packed, scales
     )
 
     torch.cuda.synchronize()

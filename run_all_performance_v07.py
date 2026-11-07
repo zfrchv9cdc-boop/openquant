@@ -309,6 +309,12 @@ def benchmarks():
         ],
     )
 
+    # Benchmark the installed production INT8 kernel.
+    run(
+        "fused_int8_production",
+        ["benchmark_fused_int8_v07.py"],
+    )
+
     # Existing fused INT4 kernel benchmark.
     run(
         "triton_kernel_speed",

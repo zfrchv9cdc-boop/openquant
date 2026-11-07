@@ -10,6 +10,10 @@ import triton
 import triton.language as tl
 import triton.testing
 
+from openquant.triton_int8 import (
+    int8_linear as production_int8
+)
+
 from openquant.quantization import (
     quantize,
     dequantize,
@@ -118,7 +122,7 @@ def main():
     results = []
 
     print("GPU:", torch.cuda.get_device_name(0))
-    print("Fused INT8 versus existing decode-per-call")
+    print("Production INT8 versus existing decode-per-call")
     print()
 
     for n in (384, 1536):
@@ -154,7 +158,7 @@ def main():
             )
 
             def fused():
-                return fused_int8(x, q, scales, n)
+                return production_int8(x, q, scales)
 
             def decode_each_time():
                 full = (
