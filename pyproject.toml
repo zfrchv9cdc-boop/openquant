@@ -32,6 +32,11 @@ inference = [
     "triton-windows>=3.8,<3.9; sys_platform == 'win32'",
 ]
 
+quality = [
+    "datasets>=3,<5",
+    "scipy>=1.13,<2",
+]
+
 [project.scripts]
 openquant = "openquant.cli:main"
 
@@ -40,7 +45,3 @@ include = ["openquant*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-quality = [
-    "datasets>=3,<5",
-    "scipy>=1.13,<2",
-]
