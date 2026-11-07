@@ -170,3 +170,120 @@ def test_cache_limit_and_batching():
     encoder.clear_graph_cache()
 
     assert encoder.cache_info()["cached_graphs"] == 0
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(),
+    reason="CUDA required",
+)
+def test_graph_lru_eviction():
+    model = TinyModel()
+    tokenizer = TinyTokenizer()
+
+    encoder = OpenQuantEncoder(
+        model=model,
+        tokenizer=tokenizer,
+        batch_size=2,
+        max_length=64,
+        max_graphs=2,
+        max_graph_cache_mb=512,
+        min_capture_free_mb=0,
+    )
+
+    # Three different sequence buckets.
+    encoder.encode(["cat"])       # 16 tokens
+    encoder.encode(["x" * 20])    # 32 tokens
+
+    # Make the first shape most recently used.
+    encoder.encode(["cat"])
+
+    # This should evict the 32-token shape.
+    encoder.encode(["z" * 40])    # 64 tokens
+
+    info = encoder.cache_info()
+    shapes = info["shapes"]
+
+    assert info["cached_graphs"] == 2
+    assert [1, 16] in shapes
+    assert [1, 64] in shapes
+    assert [1, 32] not in shapes
+
+    assert info["stats"]["graph_evictions"] >= 1
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(),
+    reason="CUDA required",
+)
+def test_graph_memory_budget_rejection():
+    encoder = OpenQuantEncoder(
+        model=TinyModel(),
+        tokenizer=TinyTokenizer(),
+        max_graphs=2,
+        max_graph_cache_mb=0.000001,
+        min_capture_free_mb=0,
+    )
+
+    texts = ["cat", "dog"]
+
+    expected = encoder.encode(
+        texts, use_graph=False
+    )
+
+    actual = encoder.encode(
+        texts, use_graph=True
+    )
+
+    torch.testing.assert_close(
+        actual, expected, rtol=0.001, atol=0.001
+    )
+
+    info = encoder.cache_info()
+
+    assert info["cached_graphs"] == 0
+    assert info["stats"]["budget_rejections"] >= 1
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(),
+    reason="CUDA required",
+)
+def test_zero_budget_uses_eager():
+    encoder = OpenQuantEncoder(
+        model=TinyModel(),
+        tokenizer=TinyTokenizer(),
+        max_graph_cache_mb=0,
+    )
+
+    result = encoder.encode(["testing"])
+
+    assert result.shape == (1, 16)
+
+    info = encoder.cache_info()
+
+    assert info["cached_graphs"] == 0
+    assert info["graph_cache_bytes"] == 0
+    assert info["stats"]["eager_calls"] >= 1
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(),
+    reason="CUDA required",
+)
+def test_capture_headroom_fallback():
+    encoder = OpenQuantEncoder(
+        model=TinyModel(),
+        tokenizer=TinyTokenizer(),
+        max_graph_cache_mb=128,
+        min_capture_free_mb=1000000,
+    )
+
+    result = encoder.encode(["testing"])
+
+    assert result.shape == (1, 16)
+
+    info = encoder.cache_info()
+
+    assert info["cached_graphs"] == 0
+    assert info["stats"]["low_memory_fallbacks"] >= 1
+

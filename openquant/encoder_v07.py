@@ -15,7 +15,7 @@ Experimental CUDA-only implementation.
 
 import gc
 import threading
-from collections import Counter
+from collections import Counter, OrderedDict
 from pathlib import Path
 
 import torch
@@ -116,6 +116,8 @@ class OpenQuantEncoder:
         enable_graphs=True,
         max_graphs=2,
         graph_max_tokens=2048,
+        max_graph_cache_mb=128,
+        min_capture_free_mb=256,
         model=None,
         tokenizer=None,
     ):
@@ -135,6 +137,18 @@ class OpenQuantEncoder:
         if max_graphs < 0 or graph_max_tokens < 1:
             raise ValueError("Invalid graph cache settings")
 
+        if max_graph_cache_mb < 0:
+            raise ValueError('Invalid graph memory budget')
+        if min_capture_free_mb < 0:
+            raise ValueError('Invalid capture headroom')
+
+        self.max_graph_cache_bytes = int(
+            max_graph_cache_mb * 1024 * 1024
+        )
+        self.min_capture_free_bytes = int(
+            min_capture_free_mb * 1024 * 1024
+        )
+
         self.batch_size = batch_size
         self.max_length = max_length
         self.enable_graphs = bool(enable_graphs)
@@ -144,7 +158,9 @@ class OpenQuantEncoder:
         self.device = torch.device("cuda")
         self.lock = threading.RLock()
 
-        self.graphs = {}
+        self.graphs = OrderedDict()
+        self.graph_costs = {}
+        self.graph_cache_bytes = 0
         self.graph_errors = {}
         self.stats = Counter()
 
@@ -243,71 +259,160 @@ class OpenQuantEncoder:
             tuple(sorted(tokens)),
         )
 
+
+    def _eager(self, tokens):
+        self.stats["eager_calls"] += 1
+
+        with torch.inference_mode():
+            return encode_sentences(self.model, tokens)
+
+    def _evict_lru(self):
+        """Release the least recently used cached graph."""
+
+        key, graph = self.graphs.popitem(last=False)
+
+        cost = self.graph_costs.pop(key)
+        self.graph_cache_bytes -= cost
+
+        # Ensure prior GPU work is complete before release.
+        torch.cuda.synchronize()
+        del graph
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        self.stats["graph_evictions"] += 1
+
     def _forward(self, tokens, use_graph):
-        """Choose a cached graph or the existing eager path."""
+        """Execute using an admitted graph or eager fallback."""
 
         key = self._key(tokens)
-
         batch, sequence, _ = key
 
         eligible = (
             use_graph
             and self.enable_graphs
             and self.max_graphs > 0
+            and self.max_graph_cache_bytes > 0
             and batch * sequence <= self.graph_max_tokens
         )
 
-        if eligible and key in self.graphs:
+        if not eligible:
+            return self._eager(tokens)
+
+        if key in self.graphs:
+            self.graphs.move_to_end(key)
             self.stats["graph_hits"] += 1
             return self.graphs[key](tokens)
 
-        if eligible and len(self.graphs) < self.max_graphs:
-            # Capture a graph and validate it against eager inference.
-            with torch.inference_mode():
-                reference = encode_sentences(
-                    self.model, tokens
-                ).detach().clone()
+        # Prevent repeated attempts for shapes already rejected.
+        if str(key) in self.graph_errors:
+            self.stats["blocked_shape_fallbacks"] += 1
+            return self._eager(tokens)
 
-            try:
-                captured = FixedShapeGraph(
-                    self.model, tokens
-                )
+        free_bytes, _ = torch.cuda.mem_get_info()
 
-            except RuntimeError as exc:
-                self.graph_errors[str(key)] = repr(exc)
-                self.stats["capture_failures"] += 1
+        if free_bytes < self.min_capture_free_bytes:
+            self.stats["low_memory_fallbacks"] += 1
+            return self._eager(tokens)
 
-                # The eager path remains available.
-                self.stats["eager_calls"] += 1
-
-                with torch.inference_mode():
-                    return encode_sentences(
-                        self.model, tokens
-                    )
-
-            actual = captured(tokens)
-
-            torch.cuda.synchronize()
-
-            # Do not cache an incorrect graph.
-            torch.testing.assert_close(
-                actual.float(),
-                reference.float(),
-                rtol=0.001,
-                atol=0.001,
-            )
-
-            self.graphs[key] = captured
-            self.stats["graph_captures"] += 1
-
-            return actual
-
-        self.stats["eager_calls"] += 1
+        # Evict before capture if the graph count is full.
+        while len(self.graphs) >= self.max_graphs:
+            self._evict_lru()
 
         with torch.inference_mode():
-            return encode_sentences(
+            reference = encode_sentences(
+                self.model, tokens
+            ).detach().clone()
+
+        torch.cuda.synchronize()
+        allocated_before = torch.cuda.memory_allocated()
+
+        try:
+            candidate = FixedShapeGraph(
                 self.model, tokens
             )
+
+            result = candidate(tokens)
+            torch.cuda.synchronize()
+
+        except RuntimeError as exc:
+            self.graph_errors[str(key)] = repr(exc)
+            self.stats["capture_failures"] += 1
+
+            del reference
+            gc.collect()
+            torch.cuda.empty_cache()
+
+            return self._eager(tokens)
+
+        # Incorrect graph output is an actual correctness
+        # failure, not something to silently conceal.
+        torch.testing.assert_close(
+            result.float(),
+            reference.float(),
+            rtol=0.001,
+            atol=0.001,
+        )
+
+        # Subtract the returned clone; it is not retained
+        # by the graph cache.
+        result_bytes = (
+            result.numel() * result.element_size()
+        )
+
+        measured_cost = max(
+            0,
+            torch.cuda.memory_allocated()
+            - allocated_before
+            - result_bytes,
+        )
+
+        # Include permanent input and output buffers as
+        # a minimum, even when allocations are reused.
+        static_bytes = (
+            sum(
+                tensor.numel() * tensor.element_size()
+                for tensor in candidate.inputs.values()
+            )
+            + candidate.output.numel()
+            * candidate.output.element_size()
+        )
+
+        cost = int(max(measured_cost, static_bytes))
+
+        del reference
+
+        if cost > self.max_graph_cache_bytes:
+            self.graph_errors[str(key)] = (
+                f"Graph allocation {cost} exceeds "
+                f"cache budget {self.max_graph_cache_bytes}"
+            )
+
+            self.stats["budget_rejections"] += 1
+
+            del result, candidate
+            torch.cuda.synchronize()
+            gc.collect()
+            torch.cuda.empty_cache()
+
+            return self._eager(tokens)
+
+        # Admit the new graph by evicting older graphs
+        # until the retained-allocation budget fits.
+        while (
+            self.graphs
+            and self.graph_cache_bytes + cost
+            > self.max_graph_cache_bytes
+        ):
+            self._evict_lru()
+
+        self.graphs[key] = candidate
+        self.graph_costs[key] = cost
+        self.graph_cache_bytes += cost
+
+        self.stats["graph_captures"] += 1
+
+        return result
 
     def encode(
         self,
@@ -363,6 +468,12 @@ class OpenQuantEncoder:
             return {
                 "cached_graphs": len(self.graphs),
                 "max_graphs": self.max_graphs,
+                "graph_cache_bytes": self.graph_cache_bytes,
+                "graph_budget_bytes": self.max_graph_cache_bytes,
+                "graph_costs_bytes": {
+                    str(key): value
+                    for key, value in self.graph_costs.items()
+                },
                 "shapes": [
                     [key[0], key[1]]
                     for key in self.graphs
@@ -377,12 +488,17 @@ class OpenQuantEncoder:
                 ),
             }
 
+
     def clear_graph_cache(self):
-        """Release graph references and request unused cache cleanup."""
+        """Discard cached graphs and reset memory accounting."""
 
         with self.lock:
+            torch.cuda.synchronize()
+
             self.graphs.clear()
+            self.graph_costs.clear()
             self.graph_errors.clear()
+            self.graph_cache_bytes = 0
 
             gc.collect()
             torch.cuda.empty_cache()
