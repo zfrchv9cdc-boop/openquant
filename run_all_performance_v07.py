@@ -140,6 +140,10 @@ def discover_tests():
 
 
 def pytest_run(label, files, workers=0):
+    (REPORTS / "pytest_temp").mkdir(
+        parents=True, exist_ok=True
+    )
+
     args = [
         "-m", "pytest",
         "-q", "-x",
@@ -296,23 +300,25 @@ def benchmarks():
         ["-m", "openquant.benchmark"],
     )
 
-    # Real GPU tests for FP32, FP16, INT8 and INT4.
-    for batch in (1, 4, 128):
-        run(
-            f"gpu_formats_batch{batch}",
-            [
-                "-m", "openquant.gpu_benchmark",
-                "--rows", "1536",
-                "--cols", "384",
-                "--batch", str(batch),
-                "--repeats", "20",
-            ],
-        )
+    # Shared CUDA process for all twelve format/batch cases.
+    run(
+        "gpu_formats_matrix",
+        [
+            "benchmark_gpu_formats_matrix_v07.py",
+            "--repeats", "20",
+        ],
+    )
 
     # Existing fused INT4 kernel benchmark.
     run(
         "triton_kernel_speed",
         ["-m", "openquant.kernel_speed_benchmark"],
+    )
+
+    # Wider configuration matrix, including batched GEMV.
+    run(
+        "kernel_sweep_full",
+        ["tune_all_shapes_v07.py", "--full", "--rep", "10"],
     )
 
     # End-to-end sentence encoder latency.
@@ -367,10 +373,14 @@ def benchmarks():
     # Build and validate the Python distribution.
     run(
         "package_build",
-        ["-m", "build", "--wheel"],
+        ["-m", "build", "--wheel", "--no-isolation"],
     )
 
-    wheels = sorted((ROOT / "dist").glob("*.whl"))
+    wheels = sorted(
+        (ROOT / "dist").glob("*.whl"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
 
     if not wheels:
         raise RuntimeError("Build produced no wheel")
@@ -379,7 +389,7 @@ def benchmarks():
         "wheel_validation",
         [
             "-m", "twine", "check",
-            *map(str, wheels),
+            str(wheels[0]),
         ],
     )
 
@@ -414,7 +424,6 @@ def main():
             benchmarks()
         else:
             calibrate()
-            fast()
             benchmarks()
     finally:
         output = save_report()

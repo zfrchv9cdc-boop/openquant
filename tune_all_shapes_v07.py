@@ -116,7 +116,9 @@ def main():
                 if m <= 4:
                     algorithms.extend([
                         "gemv",
-                        "batched",
+                        "batched_bn4",
+                        "batched_bn8",
+                        "batched_bn16",
                     ])
 
                 timings = {}
@@ -130,12 +132,16 @@ def main():
 
                 for algorithm in algorithms:
                     def call(alg=algorithm):
+                        if alg.startswith("batched_bn"):
+                            block = int(alg.rsplit("bn", 1)[1])
+                            return int4_linear(
+                                x, packed, scales, n, group,
+                                algorithm="batched",
+                                block_n=block,
+                            )
+
                         return int4_linear(
-                            x,
-                            packed,
-                            scales,
-                            n,
-                            group,
+                            x, packed, scales, n, group,
                             algorithm=alg,
                         )
 
