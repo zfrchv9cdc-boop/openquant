@@ -40,3 +40,7 @@ include = ["openquant*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+quality = [
+    "datasets>=3,<5",
+    "scipy>=1.13,<2",
+]
