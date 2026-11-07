@@ -40,7 +40,9 @@ BUCKETS = (16, 32, 64, 128, 256)
 class FixedShapeGraph:
     """Capture a fixed-shape encoder computation."""
 
-    def __init__(self, model, example_tokens):
+    def __init__(
+        self, model, example_tokens, *, warmup_stream=None
+    ):
         self.model = model
 
         self.keys = tuple(sorted(example_tokens))
@@ -51,7 +53,11 @@ class FixedShapeGraph:
         }
 
         current = torch.cuda.current_stream()
-        warmup = torch.cuda.Stream()
+        warmup = (
+            warmup_stream
+            if warmup_stream is not None
+            else torch.cuda.Stream()
+        )
 
         warmup.wait_stream(current)
 
@@ -188,6 +194,7 @@ class OpenQuantEncoder:
 
         self.device = torch.device("cuda")
         self.lock = threading.RLock()
+        self._warmup_stream = None
 
         self.graphs = OrderedDict()
         self.graph_costs = {}
@@ -404,8 +411,14 @@ class OpenQuantEncoder:
         self.graph_capture_attempts += 1
 
         try:
+            if self._warmup_stream is None:
+                self._warmup_stream = torch.cuda.Stream(
+                    device=self.device
+                )
+
             candidate = FixedShapeGraph(
-                self.model, tokens
+                self.model, tokens,
+                warmup_stream=self._warmup_stream,
             )
 
             result = candidate(tokens)

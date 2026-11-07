@@ -444,3 +444,60 @@ def test_capture_limit_rejects_invalid_configuration(bad_value):
         make_encoder(
             graph_capture_max_attempts=bad_value
         )
+
+
+
+def test_warmup_stream_reused_across_graph_captures():
+    encoder = make_encoder(
+        max_graphs=1,
+        graph_capture_max_attempts=0,
+    )
+
+    encoder.encode(["cat"])
+    stream = encoder._warmup_stream
+
+    assert stream is not None
+
+    encoder.encode(["x" * 20])
+    assert encoder._warmup_stream is stream
+
+    encoder.clear_graph_cache()
+
+    encoder.encode(["z" * 40])
+    assert encoder._warmup_stream is stream
+
+
+def test_graph_memory_stabilizes_after_cache_clears():
+    import gc
+
+    encoder = make_encoder(
+        max_graphs=1,
+        graph_capture_max_attempts=0,
+    )
+
+    measurements = []
+
+    for _ in range(5):
+        for sentence in (
+            "cat",
+            "x" * 20,
+            "z" * 40,
+        ):
+            encoder.encode([sentence], use_graph=True)
+
+        encoder.clear_graph_cache()
+
+        torch.cuda.synchronize()
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        measurements.append(
+            torch.cuda.memory_allocated()
+        )
+
+    # Allow allocator variation up to 2 MiB.
+    # A regression of 96 MiB per cycle must fail.
+    assert (
+        max(measurements) - min(measurements)
+        <= 2 * 1024 * 1024
+    ), measurements
