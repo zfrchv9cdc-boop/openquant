@@ -304,8 +304,9 @@ class OpenQuantEncoder:
         cost = self.graph_costs.pop(key)
         self.graph_cache_bytes -= cost
 
-        # Ensure prior GPU work is complete before release.
+        # Explicitly destroy graph execution before eviction.
         torch.cuda.synchronize()
+        graph.graph.reset()
         del graph
         gc.collect()
         torch.cuda.empty_cache()
@@ -440,8 +441,10 @@ class OpenQuantEncoder:
 
             self.stats["budget_rejections"] += 1
 
-            del result, candidate
+            # Release execution resources of rejected graph.
             torch.cuda.synchronize()
+            candidate.graph.reset()
+            del result, candidate
             gc.collect()
             torch.cuda.empty_cache()
 
@@ -554,6 +557,10 @@ class OpenQuantEncoder:
 
         with self.lock:
             torch.cuda.synchronize()
+
+            # Explicitly release all cached graph executions.
+            for cached_graph in self.graphs.values():
+                cached_graph.graph.reset()
 
             self.graphs.clear()
             self.graph_costs.clear()

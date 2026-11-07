@@ -244,3 +244,102 @@ def test_capture_floor_permits_adequate_budget():
 def test_capture_floor_rejects_invalid_configuration(bad_value):
     with pytest.raises(ValueError, match="graph_capture_min_budget_mb"):
         make_encoder(graph_capture_min_budget_mb=bad_value)
+
+
+class _ResetSpy:
+    def __init__(self, original, calls):
+        self.original = original
+        self.calls = calls
+
+    def reset(self):
+        self.calls.append("reset")
+        return self.original.reset()
+
+    def replay(self):
+        return self.original.replay()
+
+
+def test_eviction_explicitly_resets_graph():
+    encoder = make_encoder(max_graphs=1)
+
+    encoder.encode(["cat"])
+
+    cached = next(iter(encoder.graphs.values()))
+    calls = []
+
+    cached.graph = _ResetSpy(cached.graph, calls)
+
+    encoder.encode(["z" * 40])
+
+    assert calls == ["reset"]
+    assert encoder.cache_info()["cached_graphs"] == 1
+    assert encoder.cache_info()["stats"]["graph_evictions"] >= 1
+
+
+def test_clear_explicitly_resets_graph():
+    encoder = make_encoder()
+
+    original = encoder.encode(["cat"])
+
+    cached = next(iter(encoder.graphs.values()))
+    calls = []
+
+    cached.graph = _ResetSpy(cached.graph, calls)
+
+    encoder.clear_graph_cache()
+
+    assert calls == ["reset"]
+    assert encoder.cache_info()["cached_graphs"] == 0
+
+    replay = encoder.encode(["cat"])
+
+    torch.testing.assert_close(
+        replay,
+        original,
+        rtol=0.001,
+        atol=0.001,
+    )
+
+
+def test_rejected_candidate_resets_graph(monkeypatch):
+    import openquant.encoder_v07 as encoder_module
+
+    calls = []
+    original_class = encoder_module.FixedShapeGraph
+
+    class TrackedGraph(original_class):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.graph = _ResetSpy(self.graph, calls)
+
+    monkeypatch.setattr(
+        encoder_module,
+        "FixedShapeGraph",
+        TrackedGraph,
+    )
+
+    encoder = make_encoder(
+        max_graph_cache_mb=1,
+        graph_capture_min_budget_mb=0,
+    )
+
+    expected = encoder.encode(
+        ["cat"],
+        use_graph=False,
+    )
+
+    actual = encoder.encode(
+        ["cat"],
+        use_graph=True,
+    )
+
+    torch.testing.assert_close(
+        actual,
+        expected,
+        rtol=0.001,
+        atol=0.001,
+    )
+
+    assert calls == ["reset"]
+    assert encoder.cache_info()["cached_graphs"] == 0
+    assert encoder.cache_info()["stats"]["budget_rejections"] == 1
