@@ -118,6 +118,7 @@ class OpenQuantEncoder:
         graph_max_tokens=2048,
         max_graph_cache_mb=128,
         min_capture_free_mb=256,
+        graph_capture_min_calls=1,
         model=None,
         tokenizer=None,
     ):
@@ -163,6 +164,20 @@ class OpenQuantEncoder:
         self.graph_cache_bytes = 0
         self.graph_errors = {}
         self.stats = Counter()
+
+        if (
+            not isinstance(graph_capture_min_calls, int)
+            or graph_capture_min_calls < 1
+        ):
+            raise ValueError(
+                'graph_capture_min_calls must be positive'
+            )
+
+        self.graph_capture_min_calls = (
+            graph_capture_min_calls
+        )
+        self.pending_graph_shapes = OrderedDict()
+        self.pending_shape_limit = 64
 
         if tokenizer is None:
             tokenizer = AutoTokenizer.from_pretrained(
@@ -309,6 +324,18 @@ class OpenQuantEncoder:
             self.stats["blocked_shape_fallbacks"] += 1
             return self._eager(tokens)
 
+        if self.graph_capture_min_calls > 1:
+            calls = self.pending_graph_shapes.get(key, 0) + 1
+            self.pending_graph_shapes[key] = calls
+            self.pending_graph_shapes.move_to_end(key)
+
+            if len(self.pending_graph_shapes) > self.pending_shape_limit:
+                self.pending_graph_shapes.popitem(last=False)
+
+            if calls < self.graph_capture_min_calls:
+                self.stats["cold_shape_fallbacks"] += 1
+                return self._eager(tokens)
+
         free_bytes, _ = torch.cuda.mem_get_info()
 
         if free_bytes < self.min_capture_free_bytes:
@@ -408,6 +435,7 @@ class OpenQuantEncoder:
 
         self.graphs[key] = candidate
         self.graph_costs[key] = cost
+        self.pending_graph_shapes.pop(key, None)
         self.graph_cache_bytes += cost
 
         self.stats["graph_captures"] += 1
@@ -470,6 +498,11 @@ class OpenQuantEncoder:
                 "max_graphs": self.max_graphs,
                 "graph_cache_bytes": self.graph_cache_bytes,
                 "graph_budget_bytes": self.max_graph_cache_bytes,
+                "graph_capture_min_calls": self.graph_capture_min_calls,
+                "pending_shapes": [
+                    [key[0], key[1], count]
+                    for key, count in self.pending_graph_shapes.items()
+                ],
                 "graph_costs_bytes": {
                     str(key): value
                     for key, value in self.graph_costs.items()
@@ -498,6 +531,7 @@ class OpenQuantEncoder:
             self.graphs.clear()
             self.graph_costs.clear()
             self.graph_errors.clear()
+            self.pending_graph_shapes.clear()
             self.graph_cache_bytes = 0
 
             gc.collect()

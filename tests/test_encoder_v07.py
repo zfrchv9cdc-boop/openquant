@@ -287,3 +287,121 @@ def test_capture_headroom_fallback():
     assert info["cached_graphs"] == 0
     assert info["stats"]["low_memory_fallbacks"] >= 1
 
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(),
+    reason="CUDA required",
+)
+def test_two_hit_admission_skips_first_capture():
+    encoder = OpenQuantEncoder(
+        model=TinyModel(),
+        tokenizer=TinyTokenizer(),
+        graph_capture_min_calls=2,
+        max_graph_cache_mb=128,
+        min_capture_free_mb=0,
+    )
+
+    output = encoder.encode(["cat"])
+
+    assert output.shape == (1, 16)
+
+    info = encoder.cache_info()
+
+    assert info["cached_graphs"] == 0
+    assert info["stats"]["cold_shape_fallbacks"] == 1
+    assert info["stats"].get("graph_captures", 0) == 0
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(),
+    reason="CUDA required",
+)
+def test_second_request_captures_and_third_replays():
+    encoder = OpenQuantEncoder(
+        model=TinyModel(),
+        tokenizer=TinyTokenizer(),
+        graph_capture_min_calls=2,
+        max_graph_cache_mb=128,
+        min_capture_free_mb=0,
+    )
+
+    first = encoder.encode(["cat"])
+    second = encoder.encode(["cat"])
+    third = encoder.encode(["cat"])
+
+    torch.testing.assert_close(first, second)
+    torch.testing.assert_close(second, third)
+
+    info = encoder.cache_info()
+
+    assert info["cached_graphs"] == 1
+    assert info["stats"]["graph_captures"] == 1
+    assert info["stats"]["graph_hits"] == 1
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(),
+    reason="CUDA required",
+)
+def test_cold_shape_does_not_evict_hot_graph():
+    encoder = OpenQuantEncoder(
+        model=TinyModel(),
+        tokenizer=TinyTokenizer(),
+        max_graphs=1,
+        graph_capture_min_calls=2,
+        max_graph_cache_mb=128,
+        min_capture_free_mb=0,
+    )
+
+    # Establish a frequently used graph.
+    encoder.encode(["cat"])
+    encoder.encode(["cat"])
+
+    # A different shape appears only once.
+    encoder.encode(["x" * 20])
+
+    info = encoder.cache_info()
+
+    assert info["cached_graphs"] == 1
+    assert info["shapes"] == [[1, 16]]
+    assert info["stats"].get("graph_evictions", 0) == 0
+
+    # The original graph remains reusable.
+    encoder.encode(["cat"])
+
+    assert (
+        encoder.cache_info()["stats"]["graph_hits"] >= 1
+    )
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(),
+    reason="CUDA required",
+)
+def test_pending_shape_tracking_is_bounded():
+    encoder = OpenQuantEncoder(
+        model=TinyModel(),
+        tokenizer=TinyTokenizer(),
+        batch_size=8,
+        graph_capture_min_calls=99,
+        max_graph_cache_mb=128,
+        min_capture_free_mb=0,
+    )
+
+    encoder.pending_shape_limit = 3
+
+    for batch in range(1, 6):
+        encoder.encode(["cat"] * batch)
+
+    info = encoder.cache_info()
+
+    assert len(info["pending_shapes"]) == 3
+    assert info["cached_graphs"] == 0
+
+    encoder.clear_graph_cache()
+
+    assert (
+        encoder.cache_info()["pending_shapes"] == []
+    )
+
+
