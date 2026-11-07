@@ -14,6 +14,7 @@ Experimental CUDA-only implementation.
 """
 
 import gc
+import math
 import threading
 from collections import Counter, OrderedDict
 from pathlib import Path
@@ -119,6 +120,7 @@ class OpenQuantEncoder:
         max_graph_cache_mb=128,
         min_capture_free_mb=256,
         graph_capture_min_calls=1,
+        graph_capture_min_budget_mb=0,
         model=None,
         tokenizer=None,
     ):
@@ -143,11 +145,24 @@ class OpenQuantEncoder:
         if min_capture_free_mb < 0:
             raise ValueError('Invalid capture headroom')
 
+        if (
+            isinstance(graph_capture_min_budget_mb, bool)
+            or not isinstance(graph_capture_min_budget_mb, (int, float))
+            or not math.isfinite(graph_capture_min_budget_mb)
+            or graph_capture_min_budget_mb < 0
+        ):
+            raise ValueError(
+                'graph_capture_min_budget_mb must be finite and nonnegative'
+            )
+
         self.max_graph_cache_bytes = int(
             max_graph_cache_mb * 1024 * 1024
         )
         self.min_capture_free_bytes = int(
             min_capture_free_mb * 1024 * 1024
+        )
+        self.graph_capture_min_budget_bytes = int(
+            graph_capture_min_budget_mb * 1024 * 1024
         )
 
         self.batch_size = batch_size
@@ -318,6 +333,16 @@ class OpenQuantEncoder:
             self.graphs.move_to_end(key)
             self.stats["graph_hits"] += 1
             return self.graphs[key](tokens)
+
+        # Optional model-specific preflight threshold.
+        # Not a physical VRAM guarantee.
+        if (
+            self.graph_capture_min_budget_bytes > 0
+            and self.max_graph_cache_bytes
+            < self.graph_capture_min_budget_bytes
+        ):
+            self.stats["preflight_budget_fallbacks"] += 1
+            return self._eager(tokens)
 
         # Prevent repeated attempts for shapes already rejected.
         if str(key) in self.graph_errors:
@@ -500,6 +525,7 @@ class OpenQuantEncoder:
                 "graph_cache_bytes": self.graph_cache_bytes,
                 "graph_budget_bytes": self.max_graph_cache_bytes,
                 "graph_capture_min_calls": self.graph_capture_min_calls,
+                "graph_capture_min_budget_bytes": self.graph_capture_min_budget_bytes,
                 "pending_shapes": [
                     [key[0], key[1], count]
                     for key, count in self.pending_graph_shapes.items()

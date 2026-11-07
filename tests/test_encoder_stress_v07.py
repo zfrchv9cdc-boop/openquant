@@ -198,3 +198,49 @@ def test_concurrent_encoder_requests_match_eager():
             "cold_shape_fallbacks", 0
         ) >= 1
     )
+
+
+def test_capture_floor_skips_unaffordable_budget():
+    encoder = make_encoder(
+        max_graph_cache_mb=16,
+        graph_capture_min_budget_mb=32,
+    )
+
+    expected = encoder.encode(["cat"], use_graph=False)
+    actual = encoder.encode(["cat"], use_graph=True)
+
+    torch.testing.assert_close(actual, expected)
+
+    info = encoder.cache_info()
+
+    assert info["cached_graphs"] == 0
+    assert info["graph_capture_min_budget_bytes"] == 32 * 1024 ** 2
+    assert info["stats"]["preflight_budget_fallbacks"] == 1
+    assert info["stats"].get("budget_rejections", 0) == 0
+    assert info["stats"].get("graph_captures", 0) == 0
+
+
+def test_capture_floor_permits_adequate_budget():
+    encoder = make_encoder(
+        max_graph_cache_mb=128,
+        graph_capture_min_budget_mb=32,
+    )
+
+    expected = encoder.encode(["cat"], use_graph=False)
+    actual = encoder.encode(["cat"], use_graph=True)
+
+    torch.testing.assert_close(actual, expected)
+
+    info = encoder.cache_info()
+
+    assert info["cached_graphs"] == 1
+    assert info["stats"]["graph_captures"] == 1
+    assert info["stats"].get("preflight_budget_fallbacks", 0) == 0
+
+
+@pytest.mark.parametrize(
+    "bad_value", [-1, float("nan"), float("inf"), "32", True]
+)
+def test_capture_floor_rejects_invalid_configuration(bad_value):
+    with pytest.raises(ValueError, match="graph_capture_min_budget_mb"):
+        make_encoder(graph_capture_min_budget_mb=bad_value)
