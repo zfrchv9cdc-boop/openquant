@@ -13,7 +13,7 @@ def main(argv=None):
     parser.add_argument(
         "--version",
         action="version",
-        version="OpenQuant 0.6.0.dev0",
+        version="OpenQuant 0.7.0.dev0",
     )
 
     commands = parser.add_subparsers(dest="command")
@@ -42,6 +42,10 @@ def main(argv=None):
     configure_commands(commands)
     from openquant.encode_cli import configure_encode_command
     configure_encode_command(commands)
+    from openquant.checkpoint_info_v07 import (
+        configure_checkpoint_info
+    )
+    configure_checkpoint_info(commands)
 
     args = parser.parse_args(argv)
 
@@ -65,6 +69,15 @@ def main(argv=None):
 
     elif args.command == "analyze-model":
         run_analyze(args)
+
+    elif args.command == "checkpoint-info":
+        from openquant.checkpoint_info_v07 import (
+            run_checkpoint_info
+        )
+        try:
+            return run_checkpoint_info(args)
+        except (ValueError, OSError) as exc:
+            parser.error(str(exc))
 
     elif args.command == "encode":
         from openquant.encode_cli import run_encode

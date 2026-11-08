@@ -54,7 +54,7 @@ jobs:
 
       - name: Run CPU tests
         run: python -m pytest -q tests/test_quantization.py tests/test_report.py tests/test_model_eval.py tests/test_checkpoint.py tests/test_encode_cli_v07.py
-  
+
   windows-torch-cpu:
     runs-on: windows-latest
 
@@ -76,7 +76,7 @@ jobs:
         run: |
           python -m pytest -q tests/test_torch_int8.py
           python -m pytest -q tests/test_int8_checkpoint_v07.py
+          python -m pytest -q tests/test_checkpoint_info_v07.py
 
       - name: Verify dependency consistency
         run: python -m pip check
- 

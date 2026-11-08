@@ -85,3 +85,24 @@ Run the checkpoint tests:
 The saved checkpoint contains INT8 weights for converted layers
 and retains ordinary tensors for unconverted modules.
 
+
+
+## Inspect portable INT8 checkpoints
+
+Check a compressed checkpoint without loading a model:
+
+```text
+openquant checkpoint-info --input reports/demo_portable_int8.safetensors
+```
+
+Machine-readable information:
+
+```text
+openquant checkpoint-info --input reports/demo_portable_int8.safetensors --json
+```
+
+The inspector verifies the tensor file against the manifest's
+SHA-256 checksum and validates basic metadata.
+
+The checksum is not a cryptographic signature.
+Only load checkpoints from trusted sources.
